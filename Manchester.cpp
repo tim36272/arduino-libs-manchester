@@ -41,6 +41,9 @@ static uint8_t rx_curByte = 0;
 static uint8_t rx_maxBytes = 2;
 static uint8_t rx_default_data[2];
 static uint8_t* rx_data = rx_default_data;
+static uint8_t lastTxData[2];
+
+static unsigned int analogSample;
 
 Manchester::Manchester() //constructor
 {
@@ -69,7 +72,7 @@ void Manchester::workAround1MhzTinyCore(uint8_t a)
 void Manchester::setupTransmit(uint8_t pin, uint8_t SF)
 {
   setTxPin(pin);
-  speedFactor = SF;
+  speedFactor = SF; 	
   //we don't use exact calculation of passed time spent outside of transmitter
   //because of high ovehead associated with it, instead we use this 
   //emprirically determined values to compensate for the time loss
@@ -121,7 +124,6 @@ void Manchester::transmit(uint16_t data)
 The 433.92 Mhz receivers have AGC, if no signal is present the gain will be set
 to its highest level.
 
-In this condition it will switch high to low at random intervals due to input noise.
 A CRO connected to the data line looks like 433.92 is full of transmissions.
 
 Any ASK transmission method must first sent a capture signal of 101010........
@@ -136,26 +138,19 @@ The receiver is then operating correctly and we have locked onto the transmissio
 */
 void Manchester::transmitArray(uint8_t numBytes, uint8_t *data)
 {
-
-#if SYNC_BIT_VALUE
-  for( int8_t i = 0; i < SYNC_PULSE_DEF; i++) //send capture pulses
-  {
-    sendOne(); //end of capture pulses
-  }
-  sendZero(); //start data pulse
-#else
-  for( int8_t i = 0; i < SYNC_PULSE_DEF; i++) //send capture pulses
-  {
+  // Send 14 0's
+  for( int16_t i = 0; i < 14; i++) //send capture pulses
     sendZero(); //end of capture pulses
-  }
+ 
+  // Send a single 1
   sendOne(); //start data pulse
-#endif
  
   // Send the user data
   for (uint8_t i = 0; i < numBytes; i++)
   {
     uint16_t mask = 0x01; //mask to send bits
     uint8_t d = data[i] ^ DECOUPLING_MASK;
+    lastTxData[i] = d;
     for (uint8_t j = 0; j < 8; j++)
     {
       if ((d & mask) == 0)
@@ -166,17 +161,16 @@ void Manchester::transmitArray(uint8_t numBytes, uint8_t *data)
     }//end of byte
   }//end of data
 
-  // Send 3 terminatings 0's to correctly terminate the previous bit and to turn the transmitter off
-#if SYNC_BIT_VALUE
-  sendOne();
-  sendOne();
-  sendOne();
-#else
+  // Send 2 terminatings 0's to correctly terminate the previous bit and to turn the transmitter off
+  sendZero(); 
   sendZero();
-  sendZero();
-  sendZero();
-#endif
 }//end of send the data
+uint16_t Manchester::getLastTxData(void) {
+  uint16_t data = 0;
+  data = data | lastTxData[1] << 8;
+  data = data | lastTxData[0];
+  return data;
+}
 
 
 void Manchester::sendZero(void)
@@ -265,7 +259,7 @@ void MANRX_SetupReceive(uint8_t speedFactor)
   pinMode(RxPin, INPUT);
   //setup timers depending on the microcontroller used
 
-  #if defined( __AVR_ATtiny25__ ) || defined( __AVR_ATtiny45__ ) || defined( __AVR_ATtiny85__ )
+  #if defined( __AVR_ATtinyX5__ )
 
     /*
     Timer 1 is used with a ATtiny85. 
@@ -294,7 +288,7 @@ void MANRX_SetupReceive(uint8_t speedFactor)
     TIMSK |= _BV(OCIE1A); // Turn on interrupt
     TCNT1 = 0; // Set counter to 0
 
-  #elif defined( __AVR_ATtiny2313__ ) || defined( __AVR_ATtiny2313A__ ) || defined( __AVR_ATtiny4313__ )
+  #elif defined( __AVR_ATtinyX313__ )
 
     /*
     Timer 1 is used with a ATtiny2313. 
@@ -318,7 +312,7 @@ void MANRX_SetupReceive(uint8_t speedFactor)
     TIMSK |= _BV(OCIE1B); // Turn on interrupt
     TCNT1 = 0; // Set counter to 0
 
-  #elif defined( __AVR_ATtiny24__ ) || defined( __AVR_ATtiny24A__ ) || defined( __AVR_ATtiny44__ ) || defined( __AVR_ATtiny44A__ ) || defined( __AVR_ATtiny84__ ) || defined( __AVR_ATtiny84A__ )
+  #elif defined( __AVR_ATtinyX4__ )
 
     /*
     Timer 1 is used with a ATtiny84. 
@@ -444,7 +438,16 @@ uint8_t MANRX_ReceiveComplete(void)
 {
   return (rx_mode == RX_MODE_MSG);
 }
-
+uint8_t Manchester::getRxMode(void)
+{
+  return rx_mode;
+}
+uint8_t Manchester::getRxSyncCount(void) {
+  return rx_sync_count;
+}
+unsigned int Manchester::getAnalogSample(void) {
+  return analogSample;
+}
 uint16_t MANRX_GetMessage(void)
 {
   return (((int16_t)rx_data[0]) << 8) | (int16_t)rx_data[1];
@@ -479,26 +482,14 @@ void AddManBit(uint16_t *manBits, uint8_t *numMB,
     }
     data[*curByte] = newData ^ DECOUPLING_MASK;
     (*curByte)++;
-
-    // added by caoxp @ https://github.com/caoxp
-    // compatible with unfixed-length data, with the data length defined by the first byte.
-	// at a maximum of 255 total data length.
-    if( (*curByte) == 1)
-    {
-      rx_maxBytes = data[0];
-    }
-    
     *numMB = 0;
   }
 }
-
-
-
-#if defined( __AVR_ATtiny25__ ) || defined( __AVR_ATtiny45__ ) || defined( __AVR_ATtiny85__ )
+#if defined( __AVR_ATtinyX5__ )
 ISR(TIMER1_COMPA_vect)
-#elif defined( __AVR_ATtiny2313__ ) || defined( __AVR_ATtiny2313A__ ) || defined( __AVR_ATtiny4313__ )
+#elif defined( __AVR_ATtinyX313__ )
 ISR(TIMER1_COMPB_vect)
-#elif defined( __AVR_ATtiny24__ ) || defined( __AVR_ATtiny24A__ ) || defined( __AVR_ATtiny44__ ) || defined( __AVR_ATtiny44A__ ) || defined( __AVR_ATtiny84__ ) || defined( __AVR_ATtiny84A__ )
+#elif defined( __AVR_ATtinyX4__ )
 ISR(TIM1_COMPA_vect)
 #elif defined(__AVR_ATmega32U4__)
 ISR(TIMER3_COMPA_vect)
@@ -512,21 +503,13 @@ ISR(TIMER2_COMPA_vect)
     rx_count += 8;
     
     // Check for value change
-    //rx_sample = digitalRead(RxPin);
-    // caoxp@github, 
-    // add filter.
-    // sample twice, only the same means a change.
-    static uint8_t rx_sample_0=0;
-    static uint8_t rx_sample_1=0;
-    rx_sample_1 = digitalRead(RxPin);
-    if( rx_sample_1 == rx_sample_0 )
-    {
-      rx_sample = rx_sample_1;
+    analogSample = analogRead(RxPin);
+    //Serial.print("Test\n");
+    if (analogSample < 20) {
+      rx_sample = 0;
+    } else {
+      rx_sample = 1;
     }
-    rx_sample_0 = rx_sample_1;
-
-
-    //check sample transition
     uint8_t transition = (rx_sample != rx_last_sample);
   
     if (rx_mode == RX_MODE_PRE)
@@ -537,6 +520,7 @@ ISR(TIMER2_COMPA_vect)
         rx_count = 0;
         rx_sync_count = 0;
         rx_mode = RX_MODE_SYNC;
+        //Serial.print("Entering sync mode\n");
       }
     }
     else if (rx_mode == RX_MODE_SYNC)
@@ -544,8 +528,8 @@ ISR(TIMER2_COMPA_vect)
       // Initial sync block
       if (transition)
       {
-        if( ( (rx_sync_count < (SYNC_PULSE_MIN * 2) )  || (rx_last_sample == 1)  ) &&
-            ( (rx_count < MinCount) || (rx_count > MaxCount)))
+        if(((rx_sync_count < 20) || (rx_last_sample == 1)) &&
+           ((rx_count < MinCount) || (rx_count > MaxCount)))
         {
           // First 20 bits and all 1 bits are expected to be regular
           // Transition was too slow/fast
@@ -563,19 +547,20 @@ ISR(TIMER2_COMPA_vect)
           rx_sync_count++;
           
           if((rx_last_sample == 0) &&
-             (rx_sync_count >= (SYNC_PULSE_MIN * 2) ) &&
+             (rx_sync_count >= 20) &&
              (rx_count >= MinLongCount))
           {
             // We have seen at least 10 regular transitions
             // Lock sequence ends with unencoded bits 01
             // This is encoded and TX as HI,LO,LO,HI
             // We have seen a long low - we are now locked!
-            rx_mode    = RX_MODE_DATA;
+            rx_mode = RX_MODE_DATA;
             rx_manBits = 0;
-            rx_numMB   = 0;
+            rx_numMB = 0;
             rx_curByte = 0;
+            //Serial.print("Entering data mode\n");
           }
-          else if (rx_sync_count >= (SYNC_PULSE_MAX * 2) )
+          else if (rx_sync_count >= 32)
           {
             rx_mode = RX_MODE_PRE;
           }
@@ -603,6 +588,7 @@ ISR(TIMER2_COMPA_vect)
           if ((rx_sample == 1) &&
               (rx_curByte >= rx_maxBytes))
           {
+            //Serial.print("Entering msg mode\n");
             rx_mode = RX_MODE_MSG;
           }
           else
